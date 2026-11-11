@@ -1,0 +1,1 @@
+ALTER TABLE `registrationLinks` ADD `usedAt` timestamp;

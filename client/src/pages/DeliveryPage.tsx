@@ -1,0 +1,15 @@
+import { useState } from "react";
+import { trpc } from "@/lib/trpc";
+import { PublicFrame } from "./RegisterPage";
+import { Check, Clock3, PackageCheck, ShieldCheck, Smartphone } from "lucide-react";
+
+export default function DeliveryPage({ params }: { params: { token: string } }) {
+  const [done, setDone] = useState<{ fullName: string; mealsRemaining: number; totalMeals: number } | null>(null);
+  const preview = trpc.delivery.preview.useQuery({ token: params.token }, { retry: false, refetchInterval: done ? false : 10000 });
+  const complete = trpc.delivery.complete.useMutation({ onSuccess: result => setDone(result) });
+  if (preview.isLoading) return <PublicFrame><div className="screen-state">جارٍ التحقق من رابط التوصيل…</div></PublicFrame>;
+  if (!preview.data) return <PublicFrame><div className="empty-state"><h2>رابط التوصيل غير صالح</h2><p>اطلب من الفرع إصدار رابط توصيل جديد.</p></div></PublicFrame>;
+  const customerName = done?.fullName ?? preview.data.fullName;
+  const completed = done !== null || preview.data.status === "completed";
+  return <PublicFrame><section className="public-card"><div className="eyebrow">تسليم وجبة · Diet Coach</div>{completed ? <div className="delivery-done"><span className="success-icon"><Check size={25} /></span><h2>تم تأكيد التسليم</h2><p>تم تسجيل العملية كخصم عبر التوصيل باسم {customerName}.</p>{done && <div className="meal-remaining"><b>{done.mealsRemaining}</b><span>وجبة متبقية من {done.totalMeals}</span></div>}</div> : <><h1 style={{ marginTop: 6 }}>تأكيد تسليم الوجبة</h1><p className="subtext">تحقق من اسم العميل ثم أكد التسليم بعد إعطائه وجبته.</p><div className="delivery-warning"><PackageCheck size={18} /><span>هذا رابط توصيل مخصص ويُستخدم مرة واحدة. بمجرد التأكيد، تُخصم وجبة من رصيد العميل ويظهر الخصم في سجل التوصيل.</span></div><div className="member-card"><div className="member-top"><span className="brand-mark"><Smartphone size={15} /></span><span>تسليم عبر التوصيل</span><ShieldCheck className="verify" size={18} /></div><div className="member-name">{customerName}</div><div className="member-branch">الرصيد الحالي</div><div className="member-balance"><b>{preview.data.mealsRemaining}</b><span>وجبة</span></div><div className="member-footer"><span>رابط تسليم خاص</span><span><Clock3 size={12} style={{ verticalAlign: "middle" }} /> صالح 24 ساعة</span></div></div>{preview.data.status !== "pending" ? <div className="wallet-status">تم إغلاق هذا الرابط مسبقاً؛ لا يمكن خصم وجبة أخرى منه.</div> : <button className="button primary full" style={{ marginTop: 16, height: 45 }} disabled={complete.isPending || preview.data.mealsRemaining < 1} onClick={() => complete.mutate({ token: params.token })}>{complete.isPending ? "جارٍ تسجيل التسليم…" : preview.data.mealsRemaining < 1 ? "لا يوجد رصيد متبقٍ" : "تأكيد التسليم وخصم وجبة"}<Check size={16} /></button>}{complete.error && <p className="form-hint" style={{ marginTop: 10 }}>{complete.error.message}</p>}</>}</section></PublicFrame>;
+}
