@@ -52,6 +52,10 @@ export const customers = mysqlTable("customers", {
   registrationLinkId: int("registrationLinkId").notNull(),
   sourceBranchId: int("sourceBranchId").notNull(),
   sourceCashierId: int("sourceCashierId").notNull(),
+  googleWalletObjectId: varchar("googleWalletObjectId", { length: 255 }).unique(),
+  googleWalletStatus: mysqlEnum("googleWalletStatus", ["pending", "ready", "error"]).default("pending").notNull(),
+  googleWalletErrorCode: varchar("googleWalletErrorCode", { length: 80 }),
+  googleWalletUpdatedAt: timestamp("googleWalletUpdatedAt"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 

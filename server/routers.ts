@@ -8,6 +8,7 @@ import { getDb } from "./db";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { adminProcedure, protectedProcedure, publicProcedure, router } from "./_core/trpc";
+import { createGoogleWalletSaveUrl, googleWalletErrorCode as googleWalletErrorCodeFn, upsertGoogleWalletObject } from "./googleWallet";
 
 const dbOrFail = async () => {
   const db = await getDb();
@@ -31,6 +32,21 @@ const operatorProcedure = protectedProcedure.use(async ({ ctx, next }) => {
 
 const managerProcedure = adminProcedure;
 const linkPath = (kind: "register" | "delivery", token: string) => `/${kind}/${token}`;
+const syncCustomerWallet = async (customerId: number) => {
+  const db = await dbOrFail();
+  const [row] = await db.select({ customer: customers, branchName: branches.name }).from(customers).innerJoin(branches, eq(customers.sourceBranchId, branches.id)).where(eq(customers.id, customerId)).limit(1);
+  if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
+  try {
+    const { objectId } = await upsertGoogleWalletObject({ ...row.customer, branchName: row.branchName });
+    await db.update(customers).set({ googleWalletObjectId: objectId, googleWalletStatus: "ready", googleWalletErrorCode: null, googleWalletUpdatedAt: new Date() }).where(eq(customers.id, customerId));
+    return { status: "ready" as const, errorCode: null };
+  } catch (error) {
+    const errorCode = googleWalletErrorCodeFn(error);
+    console.error(`[Google Wallet] Customer ${customerId} synchronization failed: ${errorCode}`);
+    await db.update(customers).set({ googleWalletStatus: "error", googleWalletErrorCode: errorCode }).where(eq(customers.id, customerId));
+    return { status: "error" as const, errorCode };
+  }
+};
 
 export const appRouter = router({
   system: systemRouter,
@@ -88,6 +104,15 @@ export const appRouter = router({
       await db.update(cashiers).set({ active: input.active ? 1 : 0 }).where(eq(cashiers.id, input.cashierId));
       return { ok: true };
     }),
+    updateCustomer: managerProcedure.input(z.object({ customerId: z.number().int().positive(), fullName: z.string().trim().min(2).max(160), phone: z.string().trim().min(7).max(40), email: z.string().trim().email().max(320).optional().or(z.literal("")), totalMeals: z.number().int().min(1).max(200), mealsRemaining: z.number().int().min(0) }).refine(value => value.mealsRemaining <= value.totalMeals, { message: "عدد الوجبات المتبقية لا يمكن أن يتجاوز إجمالي الوجبات" }))
+      .mutation(async ({ input }) => {
+        const db = await dbOrFail();
+        const [existing] = await db.select({ id: customers.id }).from(customers).where(eq(customers.id, input.customerId)).limit(1);
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
+        await db.update(customers).set({ fullName: input.fullName, phone: input.phone, email: input.email || null, totalMeals: input.totalMeals, mealsRemaining: input.mealsRemaining }).where(eq(customers.id, input.customerId));
+        const wallet = await syncCustomerWallet(input.customerId);
+        return { ok: true, walletStatus: wallet.status, walletErrorCode: wallet.errorCode };
+      }),
   }),
 
   registration: router({
@@ -110,15 +135,17 @@ export const appRouter = router({
     }),
     submit: publicProcedure.input(z.object({ token: z.string().min(20).max(64), fullName: z.string().trim().min(2).max(160), phone: z.string().trim().min(7).max(40), email: z.string().trim().email().max(320).optional().or(z.literal("")) })).mutation(async ({ input }) => {
       const db = await dbOrFail();
-      return db.transaction(async tx => {
+      const customer = await db.transaction(async tx => {
         const [link] = await tx.select().from(registrationLinks).where(eq(registrationLinks.token, input.token)).limit(1);
         if (!link || link.usedAt) throw new TRPCError({ code: "NOT_FOUND", message: "رابط التسجيل غير صالح أو تم استخدامه" });
         const [claimed] = await tx.update(registrationLinks).set({ usedAt: new Date() }).where(and(eq(registrationLinks.id, link.id), isNull(registrationLinks.usedAt)));
         if (!claimed.affectedRows) throw new TRPCError({ code: "CONFLICT", message: "تم استخدام رابط التسجيل مسبقاً" });
         const token = nanoid(40);
-        await tx.insert(customers).values({ token, fullName: input.fullName, phone: input.phone, email: input.email || null, totalMeals: link.totalMeals, mealsRemaining: link.totalMeals, registrationLinkId: link.id, sourceBranchId: link.branchId, sourceCashierId: link.cashierId });
-        return { url: `/member/${token}` };
+        const [inserted] = await tx.insert(customers).values({ token, fullName: input.fullName, phone: input.phone, email: input.email || null, totalMeals: link.totalMeals, mealsRemaining: link.totalMeals, registrationLinkId: link.id, sourceBranchId: link.branchId, sourceCashierId: link.cashierId });
+        return { id: inserted.insertId, token };
       });
+      await syncCustomerWallet(customer.id);
+      return { url: `/member/${customer.token}` };
     }),
   }),
 
@@ -132,19 +159,38 @@ export const appRouter = router({
       }
       const branchId = ctx.actor.role === "manager" ? customer.sourceBranchId : ctx.actor.branchId;
       const cashierId = ctx.actor.role === "manager" ? null : ctx.actor.cashierId;
-      return db.transaction(async tx => {
+      const result = await db.transaction(async tx => {
         const [updated] = await tx.update(customers).set({ mealsRemaining: sql`${customers.mealsRemaining} - 1` }).where(and(eq(customers.id, customer.id), gt(customers.mealsRemaining, 0)));
         if (!updated.affectedRows) throw new TRPCError({ code: "CONFLICT", message: "لا توجد وجبات متبقية لهذا العميل" });
         await tx.insert(redemptions).values({ customerId: customer.id, branchId, cashierId, method: "cashier", redeemedByUserId: ctx.user.id });
         const [fresh] = await tx.select().from(customers).where(eq(customers.id, customer.id)).limit(1);
         return { fullName: fresh.fullName, mealsRemaining: fresh.mealsRemaining, totalMeals: fresh.totalMeals };
       });
+      const wallet = await syncCustomerWallet(customer.id);
+      return { ...result, walletSync: wallet.status };
     }),
     member: publicProcedure.input(z.object({ token: z.string().min(20).max(64) })).query(async ({ input }) => {
       const db = await dbOrFail();
       const [row] = await db.select({ customer: customers, branchName: branches.name }).from(customers).innerJoin(branches, eq(customers.sourceBranchId, branches.id)).where(eq(customers.token, input.token)).limit(1);
       if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "بطاقة العميل غير موجودة" });
-      return { fullName: row.customer.fullName, totalMeals: row.customer.totalMeals, mealsRemaining: row.customer.mealsRemaining, branchName: row.branchName, createdAt: row.customer.createdAt };
+      let googleWalletSaveUrl: string | null = null;
+      let googleWalletStatus = row.customer.googleWalletStatus;
+      let googleWalletErrorCode = row.customer.googleWalletErrorCode;
+      if (googleWalletStatus === "ready" && row.customer.googleWalletObjectId) {
+        try {
+          googleWalletSaveUrl = await createGoogleWalletSaveUrl({ ...row.customer, branchName: row.branchName });
+        } catch (error) {
+          googleWalletStatus = "error";
+          googleWalletErrorCode = googleWalletErrorCodeFn(error);
+        }
+      }
+      return { fullName: row.customer.fullName, phone: row.customer.phone, email: row.customer.email, totalMeals: row.customer.totalMeals, mealsRemaining: row.customer.mealsRemaining, branchName: row.branchName, createdAt: row.customer.createdAt, googleWalletStatus, googleWalletErrorCode, googleWalletSaveUrl };
+    }),
+    retryGoogleWallet: publicProcedure.input(z.object({ token: z.string().min(20).max(64) })).mutation(async ({ input }) => {
+      const db = await dbOrFail();
+      const [customer] = await db.select({ id: customers.id }).from(customers).where(eq(customers.token, input.token)).limit(1);
+      if (!customer) throw new TRPCError({ code: "NOT_FOUND", message: "بطاقة العميل غير موجودة" });
+      return syncCustomerWallet(customer.id);
     }),
     createDeliveryLink: operatorProcedure.input(z.object({ customerId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
       const db = await dbOrFail();
@@ -173,7 +219,7 @@ export const appRouter = router({
       if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "رابط التوصيل غير صالح" });
       if (row.link.status !== "pending") throw new TRPCError({ code: "CONFLICT", message: "تم استخدام رابط التوصيل مسبقاً" });
       if (Date.now() - row.link.createdAt.getTime() > 24 * 60 * 60 * 1000) throw new TRPCError({ code: "TIMEOUT", message: "انتهت صلاحية رابط التوصيل" });
-      return db.transaction(async tx => {
+      const result = await db.transaction(async tx => {
         const [linkUpdate] = await tx.update(deliveryLinks).set({ status: "completed", redeemedAt: new Date() }).where(and(eq(deliveryLinks.id, row.link.id), eq(deliveryLinks.status, "pending")));
         if (!linkUpdate.affectedRows) throw new TRPCError({ code: "CONFLICT", message: "تم استخدام رابط التوصيل مسبقاً" });
         const [customerUpdate] = await tx.update(customers).set({ mealsRemaining: sql`${customers.mealsRemaining} - 1` }).where(and(eq(customers.id, row.customer.id), gt(customers.mealsRemaining, 0)));
@@ -182,6 +228,8 @@ export const appRouter = router({
         const [fresh] = await tx.select().from(customers).where(eq(customers.id, row.customer.id)).limit(1);
         return { fullName: fresh.fullName, mealsRemaining: fresh.mealsRemaining, totalMeals: fresh.totalMeals };
       });
+      const wallet = await syncCustomerWallet(row.customer.id);
+      return { ...result, walletSync: wallet.status };
     }),
   }),
 });

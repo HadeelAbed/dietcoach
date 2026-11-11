@@ -22,6 +22,13 @@
       "when": 1794396741710,
       "tag": "0002_demonic_tag",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1794406495302,
+      "tag": "0003_stale_lockheed",
+      "breakpoints": true
     }
   ]
 }
