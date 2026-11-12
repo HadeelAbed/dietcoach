@@ -3,7 +3,7 @@ import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { branches, cashiers, customers, deliveryLinks, redemptions, registrationLinks } from "../drizzle/schema";
+import { branches, cashiers, customers, deliveryLinks, deliveryStations, redemptions, registrationLinks } from "../drizzle/schema";
 import { getDb } from "./db";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
@@ -32,6 +32,20 @@ const operatorProcedure = protectedProcedure.use(async ({ ctx, next }) => {
 
 const managerProcedure = adminProcedure;
 const linkPath = (kind: "register" | "delivery", token: string) => `/${kind}/${token}`;
+const deliveryStationPath = (token: string) => `/delivery-scan/${token}`;
+const saveDeliveryStationLink = async (db: NonNullable<Awaited<ReturnType<typeof getDb>>>, cashierId: number, createdByUserId: number, rotate = false) => {
+  const [cashier] = await db.select({ id: cashiers.id, branchId: cashiers.branchId }).from(cashiers).where(and(eq(cashiers.id, cashierId), eq(cashiers.active, 1))).limit(1);
+  if (!cashier) throw new TRPCError({ code: "NOT_FOUND", message: "الكاشير غير موجود أو موقوف" });
+  const [station] = await db.select().from(deliveryStations).where(eq(deliveryStations.cashierId, cashierId)).limit(1);
+  if (station?.active === 1 && !rotate) return { url: deliveryStationPath(station.token), reused: true };
+  const token = nanoid(40);
+  if (station) {
+    await db.update(deliveryStations).set({ token, branchId: cashier.branchId, createdByUserId, active: 1, lastUsedAt: null }).where(eq(deliveryStations.id, station.id));
+  } else {
+    await db.insert(deliveryStations).values({ token, cashierId, branchId: cashier.branchId, createdByUserId, active: 1 });
+  }
+  return { url: deliveryStationPath(token), reused: false };
+};
 const syncCustomerWallet = async (customerId: number) => {
   const db = await dbOrFail();
   const [row] = await db.select({ customer: customers, branchName: branches.name }).from(customers).innerJoin(branches, eq(customers.sourceBranchId, branches.id)).where(eq(customers.id, customerId)).limit(1);
@@ -215,16 +229,52 @@ export const appRouter = router({
       if (!customer) throw new TRPCError({ code: "NOT_FOUND", message: "بطاقة العميل غير موجودة" });
       return syncCustomerWallet(customer.id);
     }),
-    createDeliveryLink: operatorProcedure.input(z.object({ customerId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+  }),
+
+  deliveryStation: router({
+    createLink: operatorProcedure.input(z.object({ cashierId: z.number().int().positive().optional() })).mutation(async ({ ctx, input }) => {
+      const cashierId = ctx.actor.role === "cashier" ? ctx.actor.cashierId : input.cashierId;
+      if (!cashierId) throw new TRPCError({ code: "BAD_REQUEST", message: "اختاري الكاشير الذي سيُنسب إليه رابط التوصيل" });
       const db = await dbOrFail();
-      const [customer] = await db.select().from(customers).where(eq(customers.id, input.customerId)).limit(1);
-      if (!customer) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
-      if (ctx.actor.role === "cashier" && customer.sourceCashierId !== ctx.actor.cashierId) throw new TRPCError({ code: "FORBIDDEN", message: "يمكنك إنشاء روابط توصيل لعملائك فقط" });
-      const token = nanoid(40);
-      const cashierId = ctx.actor.role === "cashier" ? ctx.actor.cashierId : customer.sourceCashierId;
-      const branchId = ctx.actor.role === "cashier" ? ctx.actor.branchId : customer.sourceBranchId;
-      await db.insert(deliveryLinks).values({ token, customerId: customer.id, createdByUserId: ctx.user.id, cashierId, branchId });
-      return { url: linkPath("delivery", token) };
+      return saveDeliveryStationLink(db, cashierId, ctx.user.id);
+    }),
+    rotateLink: operatorProcedure.input(z.object({ cashierId: z.number().int().positive().optional() })).mutation(async ({ ctx, input }) => {
+      const cashierId = ctx.actor.role === "cashier" ? ctx.actor.cashierId : input.cashierId;
+      if (!cashierId) throw new TRPCError({ code: "BAD_REQUEST", message: "اختاري الكاشير الذي سيُنسب إليه رابط التوصيل" });
+      const db = await dbOrFail();
+      return saveDeliveryStationLink(db, cashierId, ctx.user.id, true);
+    }),
+    info: publicProcedure.input(z.object({ token: z.string().min(20).max(64) })).query(async ({ input }) => {
+      const db = await dbOrFail();
+      const [station] = await db.select({ active: deliveryStations.active, cashierActive: cashiers.active, branchName: branches.name, cashierName: cashiers.name }).from(deliveryStations).innerJoin(branches, eq(deliveryStations.branchId, branches.id)).innerJoin(cashiers, eq(deliveryStations.cashierId, cashiers.id)).where(eq(deliveryStations.token, input.token)).limit(1);
+      if (!station || station.active !== 1 || station.cashierActive !== 1) throw new TRPCError({ code: "NOT_FOUND", message: "رابط ماسح التوصيل غير صالح أو تم تغييره" });
+      return { branchName: station.branchName, cashierName: station.cashierName };
+    }),
+    preview: publicProcedure.input(z.object({ stationToken: z.string().min(20).max(64), customerToken: z.string().min(20).max(64) })).query(async ({ input }) => {
+      const db = await dbOrFail();
+      const [station] = await db.select({ active: deliveryStations.active, cashierActive: cashiers.active }).from(deliveryStations).innerJoin(cashiers, eq(deliveryStations.cashierId, cashiers.id)).where(eq(deliveryStations.token, input.stationToken)).limit(1);
+      if (!station || station.active !== 1 || station.cashierActive !== 1) throw new TRPCError({ code: "NOT_FOUND", message: "رابط ماسح التوصيل غير صالح أو تم تغييره" });
+      const [row] = await db.select({ customer: customers, sourceBranchName: branches.name }).from(customers).innerJoin(branches, eq(customers.sourceBranchId, branches.id)).where(eq(customers.token, input.customerToken)).limit(1);
+      if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "لم يتم العثور على بطاقة بهذا الرمز" });
+      return { fullName: row.customer.fullName, mealsRemaining: row.customer.mealsRemaining, totalMeals: row.customer.totalMeals, sourceBranchName: row.sourceBranchName };
+    }),
+    redeem: publicProcedure.input(z.object({ stationToken: z.string().min(20).max(64), customerToken: z.string().min(20).max(64) })).mutation(async ({ input }) => {
+      const db = await dbOrFail();
+      const result = await db.transaction(async tx => {
+        const [stationRow] = await tx.select({ station: deliveryStations, cashierActive: cashiers.active }).from(deliveryStations).innerJoin(cashiers, eq(deliveryStations.cashierId, cashiers.id)).where(eq(deliveryStations.token, input.stationToken)).limit(1).for("update");
+        if (!stationRow || stationRow.station.active !== 1 || stationRow.cashierActive !== 1) throw new TRPCError({ code: "NOT_FOUND", message: "رابط ماسح التوصيل غير صالح أو تم تغييره" });
+        const station = stationRow.station;
+        const [customer] = await tx.select({ id: customers.id }).from(customers).where(eq(customers.token, input.customerToken)).limit(1);
+        if (!customer) throw new TRPCError({ code: "NOT_FOUND", message: "لم يتم العثور على بطاقة بهذا الرمز" });
+        const [updated] = await tx.update(customers).set({ mealsRemaining: sql`${customers.mealsRemaining} - 1` }).where(and(eq(customers.id, customer.id), gt(customers.mealsRemaining, 0)));
+        if (!updated.affectedRows) throw new TRPCError({ code: "CONFLICT", message: "لا توجد وجبات متبقية لهذا العميل" });
+        await tx.insert(redemptions).values({ customerId: customer.id, branchId: station.branchId, cashierId: station.cashierId, method: "delivery", deliveryLinkId: null, redeemedByUserId: station.createdByUserId });
+        await tx.update(deliveryStations).set({ lastUsedAt: new Date() }).where(and(eq(deliveryStations.id, station.id), eq(deliveryStations.token, input.stationToken), eq(deliveryStations.active, 1)));
+        const [fresh] = await tx.select().from(customers).where(eq(customers.id, customer.id)).limit(1);
+        return { customerId: customer.id, fullName: fresh.fullName, mealsRemaining: fresh.mealsRemaining, totalMeals: fresh.totalMeals };
+      });
+      const wallet = await syncCustomerWallet(result.customerId);
+      return { fullName: result.fullName, mealsRemaining: result.mealsRemaining, totalMeals: result.totalMeals, walletSync: wallet.status };
     }),
   }),
 

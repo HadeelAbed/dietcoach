@@ -73,6 +73,17 @@ export const deliveryLinks = mysqlTable("deliveryLinks", {
   redeemedAt: timestamp("redeemedAt"),
 });
 
+export const deliveryStations = mysqlTable("deliveryStations", {
+  id: int("id").autoincrement().primaryKey(),
+  token: varchar("token", { length: 64 }).notNull().unique(),
+  cashierId: int("cashierId").notNull().unique(),
+  branchId: int("branchId").notNull(),
+  createdByUserId: int("createdByUserId").notNull(),
+  active: int("active").default(1).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  lastUsedAt: timestamp("lastUsedAt"),
+});
+
 export const redemptions = mysqlTable("redemptions", {
   id: int("id").autoincrement().primaryKey(),
   customerId: int("customerId").notNull(),

@@ -8,12 +8,14 @@ import Dashboard from "./pages/Dashboard";
 import RegisterPage from "./pages/RegisterPage";
 import MemberPage from "./pages/MemberPage";
 import DeliveryPage from "./pages/DeliveryPage";
+import DeliveryScanPage from "./pages/DeliveryScanPage";
 
 function Router() {
   return <Switch>
     <Route path="/register/:token" component={RegisterPage} />
     <Route path="/member/:token" component={MemberPage} />
     <Route path="/delivery/:token" component={DeliveryPage} />
+    <Route path="/delivery-scan/:token" component={DeliveryScanPage} />
     <Route path="/" component={Dashboard} />
     <Route path="/404" component={NotFound} />
     <Route component={NotFound} />
