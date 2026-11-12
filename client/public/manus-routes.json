@@ -1,1 +1,1 @@
-{"routes":[{"path":"/","title":"Diet Coach Dashboard"},{"path":"/register/:token","title":"تسجيل عميل جديد"},{"path":"/member/:token","title":"بطاقة العميل"},{"path":"/delivery/:token","title":"تأكيد تسليم وجبة"},{"path":"/404","title":"الصفحة غير موجودة"}]}
+{"routes":[{"path":"/","title":"Diet Coach Dashboard"},{"path":"/register/:token","title":"تسجيل عميل جديد"},{"path":"/member/:token","title":"بطاقة العميل"},{"path":"/delivery/:token","title":"تأكيد تسليم وجبة"}]}

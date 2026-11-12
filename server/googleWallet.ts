@@ -110,6 +110,12 @@ export async function verifyGoogleWalletSetup() {
   return { classId: walletClass.id };
 }
 
+export async function syncGoogleWalletClassLocations(locations: Array<{ latitude: number; longitude: number }>) {
+  if (locations.length > 10) throw new GoogleWalletError("too_many_locations", "Google Wallet supports at most 10 merchant locations on a Generic Class");
+  await walletRequest("PATCH", `/genericClass/${encodeURIComponent(CLASS_ID)}`, { merchantLocations: locations });
+  return { classId: CLASS_ID, locationCount: locations.length };
+}
+
 export async function upsertGoogleWalletObject(customer: WalletCustomer) {
   getServiceAccount();
   try {

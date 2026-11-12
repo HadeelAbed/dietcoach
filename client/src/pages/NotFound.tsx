@@ -34,6 +34,10 @@ export default function NotFound() {
     <div className="min-h-screen w-full flex items-center justify-center bg-gradient-to-br from-slate-50 to-slate-100">
       <Card className="w-full max-w-lg mx-4 shadow-lg border-0 bg-white/80 backdrop-blur-sm">
         <CardContent className="pt-8 pb-8 text-center">
+          <a href="/" className="brand not-found-brand">
+            <span className="brand-mark"><img src="/diet-coach-mark.png" alt="شعار Diet Coach" /></span>
+            <span>Diet <b>Coach</b><small>دايت كوتش</small></span>
+          </a>
           <div className="flex justify-center mb-6">
             <div className="relative">
               <div className="absolute inset-0 bg-red-100 rounded-full animate-pulse" />

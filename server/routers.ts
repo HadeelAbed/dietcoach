@@ -8,7 +8,7 @@ import { getDb } from "./db";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { adminProcedure, protectedProcedure, publicProcedure, router } from "./_core/trpc";
-import { createGoogleWalletSaveUrl, googleWalletErrorCode as googleWalletErrorCodeFn, upsertGoogleWalletObject } from "./googleWallet";
+import { createGoogleWalletSaveUrl, googleWalletErrorCode as googleWalletErrorCodeFn, syncGoogleWalletClassLocations, upsertGoogleWalletObject } from "./googleWallet";
 
 const dbOrFail = async () => {
   const db = await getDb();
@@ -45,6 +45,21 @@ const syncCustomerWallet = async (customerId: number) => {
     console.error(`[Google Wallet] Customer ${customerId} synchronization failed: ${errorCode}`);
     await db.update(customers).set({ googleWalletStatus: "error", googleWalletErrorCode: errorCode }).where(eq(customers.id, customerId));
     return { status: "error" as const, errorCode };
+  }
+};
+
+const syncBranchWalletLocations = async () => {
+  const db = await dbOrFail();
+  const rows = await db.select({ latitude: branches.latitude, longitude: branches.longitude }).from(branches);
+  const locations = rows.flatMap(row => row.latitude != null && row.longitude != null ? [{ latitude: row.latitude, longitude: row.longitude }] : []);
+  if (locations.length > 10) return { status: "error" as const, errorCode: "too_many_locations", locationCount: locations.length };
+  try {
+    const result = await syncGoogleWalletClassLocations(locations);
+    return { status: locations.length ? "ready" as const : "no_locations" as const, errorCode: null, locationCount: result.locationCount };
+  } catch (error) {
+    const errorCode = googleWalletErrorCodeFn(error);
+    console.error(`[Google Wallet] Branch location synchronization failed: ${errorCode}`);
+    return { status: "error" as const, errorCode, locationCount: locations.length };
   }
 };
 
@@ -87,11 +102,19 @@ export const appRouter = router({
   }),
 
   manager: router({
-    createBranch: managerProcedure.input(z.object({ name: z.string().trim().min(2).max(140), location: z.string().trim().max(255).optional() })).mutation(async ({ ctx, input }) => {
+    createBranch: managerProcedure.input(z.object({ name: z.string().trim().min(2).max(140), location: z.string().trim().max(255).optional(), latitude: z.number().min(-90).max(90).nullable().optional(), longitude: z.number().min(-180).max(180).nullable().optional() }).refine(value => (value.latitude == null) === (value.longitude == null), { message: "أدخلي خط العرض والطول معاً" })).mutation(async ({ ctx, input }) => {
       const db = await dbOrFail();
-      await db.insert(branches).values({ name: input.name, location: input.location || null, createdByUserId: ctx.user.id });
-      return { ok: true };
+      await db.insert(branches).values({ name: input.name, location: input.location || null, latitude: input.latitude ?? null, longitude: input.longitude ?? null, createdByUserId: ctx.user.id });
+      return { ok: true, walletLocationsSync: await syncBranchWalletLocations() };
     }),
+    updateBranch: managerProcedure.input(z.object({ branchId: z.number().int().positive(), name: z.string().trim().min(2).max(140), location: z.string().trim().max(255).optional(), latitude: z.number().min(-90).max(90).nullable().optional(), longitude: z.number().min(-180).max(180).nullable().optional() }).refine(value => (value.latitude == null) === (value.longitude == null), { message: "أدخلي خط العرض والطول معاً" })).mutation(async ({ input }) => {
+      const db = await dbOrFail();
+      const [branch] = await db.select({ id: branches.id }).from(branches).where(eq(branches.id, input.branchId)).limit(1);
+      if (!branch) throw new TRPCError({ code: "NOT_FOUND", message: "الفرع غير موجود" });
+      await db.update(branches).set({ name: input.name, location: input.location || null, latitude: input.latitude ?? null, longitude: input.longitude ?? null }).where(eq(branches.id, input.branchId));
+      return { ok: true, walletLocationsSync: await syncBranchWalletLocations() };
+    }),
+    syncBranchLocations: managerProcedure.mutation(async () => syncBranchWalletLocations()),
     createCashier: managerProcedure.input(z.object({ name: z.string().trim().min(2).max(140), email: z.string().trim().email().max(320), branchId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
       const db = await dbOrFail();
       const [branch] = await db.select({ id: branches.id }).from(branches).where(eq(branches.id, input.branchId)).limit(1);
