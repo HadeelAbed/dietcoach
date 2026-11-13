@@ -8,7 +8,7 @@ import { getDb } from "./db";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { adminProcedure, protectedProcedure, publicProcedure, router } from "./_core/trpc";
-import { createGoogleWalletSaveUrl, googleWalletErrorCode as googleWalletErrorCodeFn, syncGoogleWalletClassLocations, upsertGoogleWalletObject } from "./googleWallet";
+import { createGoogleWalletSaveUrl, googleWalletErrorCode as googleWalletErrorCodeFn, resolveGoogleWalletRequestOrigin, syncGoogleWalletClassLocations, upsertGoogleWalletObject } from "./googleWallet";
 
 const dbOrFail = async () => {
   const db = await getDb();
@@ -206,22 +206,24 @@ export const appRouter = router({
       const wallet = await syncCustomerWallet(customer.id);
       return { ...result, walletSync: wallet.status };
     }),
-    member: publicProcedure.input(z.object({ token: z.string().min(20).max(64) })).query(async ({ input }) => {
+    member: publicProcedure.input(z.object({ token: z.string().min(20).max(64) })).query(async ({ ctx, input }) => {
       const db = await dbOrFail();
       const [row] = await db.select({ customer: customers, branchName: branches.name }).from(customers).innerJoin(branches, eq(customers.sourceBranchId, branches.id)).where(eq(customers.token, input.token)).limit(1);
       if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "بطاقة العميل غير موجودة" });
-      let googleWalletSaveUrl: string | null = null;
-      let googleWalletStatus = row.customer.googleWalletStatus;
-      let googleWalletErrorCode = row.customer.googleWalletErrorCode;
-      if (googleWalletStatus === "ready" && row.customer.googleWalletObjectId) {
-        try {
-          googleWalletSaveUrl = await createGoogleWalletSaveUrl({ ...row.customer, branchName: row.branchName });
-        } catch (error) {
-          googleWalletStatus = "error";
-          googleWalletErrorCode = googleWalletErrorCodeFn(error);
-        }
+      let walletOrigin: string;
+      try {
+        walletOrigin = resolveGoogleWalletRequestOrigin(ctx.req.get("origin"), ctx.req.get("referer"));
+      } catch {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "تعذر التحقق من موقع آمن لإنشاء رابط Google Wallet" });
       }
-      return { fullName: row.customer.fullName, phone: row.customer.phone, email: row.customer.email, totalMeals: row.customer.totalMeals, mealsRemaining: row.customer.mealsRemaining, branchName: row.branchName, createdAt: row.customer.createdAt, googleWalletStatus, googleWalletErrorCode, googleWalletSaveUrl };
+      let googleWalletSaveUrl: string | null = null;
+      let googleWalletLinkErrorCode: string | null = null;
+      try {
+        googleWalletSaveUrl = await createGoogleWalletSaveUrl({ ...row.customer, branchName: row.branchName }, walletOrigin);
+      } catch (error) {
+        googleWalletLinkErrorCode = googleWalletErrorCodeFn(error);
+      }
+      return { fullName: row.customer.fullName, phone: row.customer.phone, email: row.customer.email, totalMeals: row.customer.totalMeals, mealsRemaining: row.customer.mealsRemaining, branchName: row.branchName, createdAt: row.customer.createdAt, googleWalletStatus: row.customer.googleWalletStatus, googleWalletErrorCode: row.customer.googleWalletErrorCode, googleWalletLinkErrorCode, googleWalletSaveUrl };
     }),
     retryGoogleWallet: publicProcedure.input(z.object({ token: z.string().min(20).max(64) })).mutation(async ({ input }) => {
       const db = await dbOrFail();

@@ -33,6 +33,31 @@ export class GoogleWalletError extends Error {
   }
 }
 
+export function resolveGoogleWalletRequestOrigin(originHeader?: string, refererHeader?: string) {
+  const source = originHeader || refererHeader;
+  if (!source || source === "null") throw new GoogleWalletError("invalid_request_origin", "Browser request origin is missing");
+  let origin: URL;
+  try {
+    origin = new URL(source);
+  } catch {
+    throw new GoogleWalletError("invalid_request_origin", "Browser request origin is invalid");
+  }
+  if (origin.username || origin.password || (origin.protocol !== "https:" && origin.hostname !== "localhost" && origin.hostname !== "127.0.0.1")) {
+    throw new GoogleWalletError("invalid_request_origin", "Browser request origin must be secure HTTPS");
+  }
+  if (originHeader && refererHeader) {
+    try {
+      if (new URL(refererHeader).origin !== origin.origin) {
+        throw new GoogleWalletError("invalid_request_origin", "Browser Origin and Referer do not match");
+      }
+    } catch (error) {
+      if (error instanceof GoogleWalletError) throw error;
+      throw new GoogleWalletError("invalid_request_origin", "Browser Referer is invalid");
+    }
+  }
+  return origin.origin;
+}
+
 function getServiceAccount(): ServiceAccountJson {
   const raw = process.env.GOOGLE_WALLET_SERVICE_ACCOUNT_JSON;
   if (!raw) throw new GoogleWalletError("credentials_missing", "Google Wallet service-account secret is not configured");
@@ -151,12 +176,12 @@ export async function upsertGoogleWalletObject(customer: WalletCustomer) {
   return { objectId: object.id };
 }
 
-export async function createGoogleWalletSaveUrl(customer: WalletCustomer) {
+export async function createGoogleWalletSaveUrl(customer: WalletCustomer, origin: string) {
   const account = getServiceAccount();
   const privateKey = await importPKCS8(account.private_key!, "RS256");
   const jwt = await new SignJWT({
     typ: "savetowallet",
-    origins: [],
+    origins: [new URL(origin).origin],
     payload: { genericObjects: [buildGenericObject(customer)] },
   })
     .setProtectedHeader({ alg: "RS256" })

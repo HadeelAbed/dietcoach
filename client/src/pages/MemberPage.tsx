@@ -2,28 +2,106 @@ import { useEffect, useState } from "react";
 import QRCode from "qrcode";
 import { trpc } from "@/lib/trpc";
 import { PublicFrame } from "./RegisterPage";
-import { Apple, BadgeCheck, Info, LoaderCircle, WalletCards } from "lucide-react";
+import { Apple, BadgeCheck, Info, LoaderCircle } from "lucide-react";
 
-type WalletProvider = "google" | "apple";
+type WalletProvider = "apple";
 
 export default function MemberPage({ params }: { params: { token: string } }) {
-  const member = trpc.customers.member.useQuery({ token: params.token }, { retry: false, refetchInterval: 30000 });
-  const utils = trpc.useUtils();
-  const retryWallet = trpc.customers.retryGoogleWallet.useMutation({ onSuccess: async () => { await utils.customers.member.invalidate({ token: params.token }); } });
+  const member = trpc.customers.member.useQuery(
+    { token: params.token },
+    { retry: false, refetchInterval: 30000 },
+  );
   const [qr, setQr] = useState("");
   const [walletChoice, setWalletChoice] = useState<WalletProvider | null>(null);
-  useEffect(() => { void QRCode.toDataURL(`${window.location.origin}/member/${params.token}`, { width: 240, margin: 1, color: { dark: "#234737", light: "#ffffff" }, errorCorrectionLevel: "M" }).then(setQr); }, [params.token]);
-  if (member.isLoading) return <PublicFrame><div className="screen-state">جارٍ تحميل البطاقة…</div></PublicFrame>;
-  if (!member.data) return <PublicFrame><div className="empty-state"><h2>البطاقة غير موجودة</h2><p>تحقق من الرابط أو تواصل مع الفرع.</p></div></PublicFrame>;
+
+  useEffect(() => {
+    void QRCode.toDataURL(`${window.location.origin}/member/${params.token}`, {
+      width: 240,
+      margin: 1,
+      color: { dark: "#234737", light: "#ffffff" },
+      errorCorrectionLevel: "M",
+    }).then(setQr);
+  }, [params.token]);
+
+  if (member.isLoading) {
+    return <PublicFrame><div className="screen-state">جارٍ تجهيز بطاقتك…</div></PublicFrame>;
+  }
+  if (!member.data) {
+    return <PublicFrame><div className="empty-state"><h2>البطاقة غير موجودة</h2><p>تحققي من الرابط أو تواصلي مع الفرع.</p></div></PublicFrame>;
+  }
+
   const value = member.data;
-  const walletErrorText = value.googleWalletErrorCode === "permission_denied"
-    ? "Google رفض صلاحية حساب الخدمة. تأكدي من إضافة بريد حساب الخدمة كـDeveloper أو Admin في Google Wallet Console."
-    : value.googleWalletErrorCode === "authentication_failed"
-      ? "تعذرت مصادقة حساب الخدمة مع Google. راجعي صلاحية المفتاح وتحققي من أن حساب الخدمة صحيح وغير معطّل."
-    : value.googleWalletErrorCode === "class_not_found"
-      ? "لم يتم العثور على Generic Class الحالية أو لا يستطيع حساب الخدمة الوصول إليها. لن ينشئ النظام Class بديلة."
-      : value.googleWalletErrorCode === "invalid_pass_data"
-        ? "رفض Google بيانات البطاقة أو إعدادات الـClass. راجعي إعدادات الـGeneric Class في Google Wallet Console."
-        : "تعذّر إصدار بطاقة Google Wallet. بيانات التسجيل محفوظة؛ يمكنك إعادة المحاولة أو التواصل مع المدير.";
-  return <PublicFrame><section className="public-card"><div className="eyebrow">بطاقتك الرقمية</div><h1 style={{ marginTop: 5 }}>أهلاً {value.fullName.split(" ")[0]}</h1><p className="subtext">احتفظ بهذه البطاقة وامسح الرمز عند استلام وجبتك.</p><div className="member-card"><div className="member-top"><span className="brand-mark"><img src="/diet-coach-mark.png" alt="شعار Diet Coach" /></span><span>رصيد الوجبات</span><BadgeCheck className="verify" size={18} /></div><div className="member-name">{value.fullName}</div><div className="member-branch">اشتراك فعّال · {value.branchName}</div><div className="member-balance"><b>{value.mealsRemaining}</b><span>/ {value.totalMeals}</span></div><div className="member-progress"><span style={{ width: `${value.totalMeals ? (value.mealsRemaining / value.totalMeals) * 100 : 0}%` }} /></div><div className="member-footer"><span>وجبة متبقية</span><span>رصيد محدث</span></div></div><div className="qr-panel">{qr && <img src={qr} alt="باركود بطاقة العميل" />}</div><div style={{ textAlign: "center", color: "#9aa49d", fontSize: 9 }}>الباركود خاص بحسابك — لا تشاركه مع الآخرين</div><div className="wallet-picker"><div className="wallet-picker-heading"><b>أضيفي البطاقة إلى محفظتك</b><span>اختاري Google Wallet لحفظ البطاقة الحقيقية</span></div><div className="wallet-actions">{value.googleWalletSaveUrl && value.googleWalletStatus === "ready" ? <a className="wallet-button google-wallet-ready" href={value.googleWalletSaveUrl} target="_blank" rel="noreferrer"><WalletCards size={17} /> إضافة إلى Google Wallet</a> : <button type="button" className={`wallet-button${walletChoice === "google" ? " selected" : ""}`} disabled={retryWallet.isPending || value.googleWalletStatus === "pending"} aria-pressed={walletChoice === "google"} onClick={() => { setWalletChoice("google"); retryWallet.mutate({ token: params.token }); }}>{retryWallet.isPending || value.googleWalletStatus === "pending" ? <LoaderCircle size={17} className="wallet-spinner" /> : <WalletCards size={17} />}{retryWallet.isPending || value.googleWalletStatus === "pending" ? "جارٍ تجهيز البطاقة…" : "إعادة تجهيز Google Wallet"}</button>}<button type="button" className={`wallet-button${walletChoice === "apple" ? " selected" : ""}`} aria-pressed={walletChoice === "apple"} onClick={() => setWalletChoice("apple")}><Apple size={17} /> Apple Wallet لاحقاً</button></div><div className={`wallet-status ${value.googleWalletStatus === "ready" ? "wallet-status-ready" : ""}`} role="status"><Info size={16} /><span>{value.googleWalletStatus === "ready" && value.googleWalletSaveUrl ? "بطاقة Google Wallet جاهزة. المُصدر في وضع Demo؛ الإضافة متاحة فقط لحسابات Admin/Developer أو حسابات الاختبار المضافة لدى المُصدر." : value.googleWalletStatus === "error" ? walletErrorText : "يجري تجهيز بطاقة Google Wallet الحقيقية. لا تظهر البطاقة كجاهزة إلا بعد نجاح اتصال الخادم بـGoogle."}{walletChoice === "apple" ? " Apple Wallet غير مفعّل بعد." : ""}</span></div></div></section></PublicFrame>;
+  const saveLinkError = value.googleWalletLinkErrorCode
+    ? "تعذّر تجهيز رابط Google Wallet الآن. بياناتك محفوظة؛ أعيدي تحميل الصفحة للمحاولة مرة أخرى."
+    : null;
+
+  return (
+    <PublicFrame>
+      <div className="wallet-success-view">
+        <section className="wallet-success-hero">
+          <div className="wallet-success-logo"><img src="/diet-coach-mark.png" alt="" /></div>
+          <span className="wallet-success-english">Diet Coach</span>
+          <h1>دايت كوتش</h1>
+          <p>بطاقتك أصبحت جاهزة — أضيفيها إلى محفظتك واحتفظي بها في كل زيارة.</p>
+        </section>
+
+        <section className="public-card wallet-success-card">
+          <div className="wallet-success-kicker"><BadgeCheck size={17} /> تم إنشاء بطاقتك</div>
+          <h2>أضيفي البطاقة إلى محفظتك</h2>
+          <p className="subtext">مرحباً {value.fullName.split(" ")[0]}، يمكنك حفظ بطاقتك الآن في Google Wallet.</p>
+
+          <div className="member-card">
+            <div className="member-top">
+              <span className="brand-mark"><img src="/diet-coach-mark.png" alt="شعار Diet Coach" /></span>
+              <span>رصيد الوجبات</span>
+              <BadgeCheck className="verify" size={18} />
+            </div>
+            <div className="member-name">{value.fullName}</div>
+            <div className="member-branch">اشتراك فعّال · {value.branchName}</div>
+            <div className="member-balance"><b>{value.mealsRemaining}</b><span>/ {value.totalMeals}</span></div>
+            <div className="member-progress"><span style={{ width: `${value.totalMeals ? (value.mealsRemaining / value.totalMeals) * 100 : 0}%` }} /></div>
+            <div className="member-footer"><span>وجبة متبقية</span><span>رصيد محدث</span></div>
+          </div>
+
+          <div className="wallet-customer-details">
+            <span>رقم الهاتف</span><b dir="ltr">{value.phone}</b>
+            {value.email && <><span>البريد الإلكتروني</span><b dir="ltr">{value.email}</b></>}
+            <span>الفرع</span><b>{value.branchName}</b>
+          </div>
+
+          <div className="wallet-confirmation-action">
+            {value.googleWalletSaveUrl ? (
+              <a className="google-wallet-official-link" href={value.googleWalletSaveUrl} aria-label="إضافة البطاقة إلى Google Wallet" rel="noopener noreferrer">
+                <img src="/google-wallet-add-ar.svg" alt="إضافة إلى Google Wallet" />
+              </a>
+            ) : (
+              <div className="wallet-link-unavailable" role="status">
+                <p>{saveLinkError ?? "جارٍ تجهيز رابط الإضافة الآمن…"}</p>
+                <button type="button" className="button secondary" onClick={() => void member.refetch()} disabled={member.isFetching}>
+                  {member.isFetching ? <LoaderCircle className="wallet-spinner" size={16} /> : "إعادة المحاولة"}
+                </button>
+              </div>
+            )}
+            {value.googleWalletSaveUrl && (
+              <div className="wallet-status wallet-status-ready" role="status">
+                <Info size={16} />
+                <span>رابط Google Wallet الحقيقي جاهز. تُحفظ البطاقة عند الضغط والموافقة؛ وبسبب وضع Demo يجب استخدام حساب مُصرّح أو مُضاف كحساب اختبار.</span>
+              </div>
+            )}
+            {value.googleWalletSaveUrl && value.googleWalletStatus === "error" && (
+              <p className="wallet-sync-note">قد تحتاج مزامنة الرصيد والتغييرات اللاحقة إلى تفعيل حساب الخدمة كـDeveloper أو Admin في Google Wallet Console.</p>
+            )}
+          </div>
+
+          <div className="qr-panel">{qr && <img src={qr} alt="باركود بطاقة العميل" />}</div>
+          <div className="member-qr-note">الباركود خاص بحسابك — لا تشاركيه مع الآخرين</div>
+
+          <button type="button" className={`wallet-button apple-wallet-placeholder${walletChoice === "apple" ? " selected" : ""}`} aria-pressed={walletChoice === "apple"} onClick={() => setWalletChoice("apple")}>
+            <Apple size={17} /> Apple Wallet لاحقاً
+          </button>
+          {walletChoice === "apple" && <p className="wallet-sync-note">إضافة Apple Wallet غير مفعّلة حالياً.</p>}
+        </section>
+      </div>
+    </PublicFrame>
+  );
 }
