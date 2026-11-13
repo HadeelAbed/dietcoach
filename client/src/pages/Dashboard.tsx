@@ -1,6 +1,7 @@
 import { useMemo, useState, useEffect, useRef } from "react";
 import { startLogin } from "@/const";
 import { trpc } from "@/lib/trpc";
+import { useAuth } from "@/_core/hooks/useAuth";
 import { toast } from "sonner";
 import { Activity, ArrowDownLeft, ArrowUpRight, BadgeCheck, BarChart3, Building2, Check, ChevronDown, Clipboard, Clock3, CreditCard, LocateFixed, LogOut, MapPin, Menu, Pencil, Plus, QrCode, ScanLine, Search, ShieldCheck, Smartphone, Users, Utensils, WalletCards, X } from "lucide-react";
 
@@ -10,9 +11,8 @@ function initials(name?: string | null) { return (name || "DC").trim().split(/\s
 function copyUrl(path: string) { const url = `${window.location.origin}${path}`; navigator.clipboard?.writeText(url).then(() => toast.success("تم نسخ الرابط")).catch(() => { window.prompt("انسخ الرابط", url); }); }
 function CountBadge({ value, max }: { value: number; max: number }) { return <div className="meal-count"><b>{value}</b><span> / {max}<small>وجبة متبقية</small></span></div>; }
 
-export default function Dashboard() {
-  const auth = trpc.auth.me.useQuery(undefined, { retry: false });
-  const logout = trpc.auth.logout.useMutation({ onSuccess: () => window.location.reload() });
+export default function Dashboard({ requiredRole }: { requiredRole?: "manager" | "cashier" }) {
+  const auth = useAuth();
   const [tab, setTab] = useState<Tab>("overview");
   const [search, setSearch] = useState("");
   const [dialog, setDialog] = useState<"branch" | "cashier" | "register" | "scan" | "customer" | "deliveryStation" | null>(null);
@@ -32,7 +32,7 @@ export default function Dashboard() {
   const [editingCustomer, setEditingCustomer] = useState<any>(null);
   const [customerForm, setCustomerForm] = useState({ fullName: "", phone: "", email: "", totalMeals: "", mealsRemaining: "" });
   const videoRef = useRef<HTMLVideoElement>(null);
-  const data = trpc.dashboard.data.useQuery(undefined, { enabled: !!auth.data, retry: false });
+  const data = trpc.dashboard.data.useQuery(undefined, { enabled: !!auth.user, retry: false });
   const utils = trpc.useUtils();
   const reportBranchSync = (result: { status: string; errorCode: string | null; locationCount: number }) => {
     if (result.status === "ready") toast.success(`تمت مزامنة ${result.locationCount} موقع فرع مع تنبيهات Google Wallet`);
@@ -50,7 +50,7 @@ export default function Dashboard() {
   const rotateDeliveryStationMutation = trpc.deliveryStation.rotateLink.useMutation({ onSuccess: result => { setDialog(null); copyUrl(result.url); toast.success("تم تغيير الرابط القديم ونسخ رابط الماسح الجديد."); }, onError: error => toast.error(error.message) });
   const redeemMutation = trpc.customers.redeem.useMutation({ onSuccess: async result => { setScanResult(result); setBarcode(""); if (result.walletSync === "ready") toast.success(`تم خصم وجبة من ${result.fullName} وتحديث Google Wallet`); else toast.error(`تم الخصم من ${result.fullName}، لكن تعذّر تحديث Google Wallet`); await utils.dashboard.data.invalidate(); }, onError: error => toast.error(error.message) });
   const editCustomerMutation = trpc.manager.updateCustomer.useMutation({ onSuccess: async result => { setDialog(null); setEditingCustomer(null); await utils.dashboard.data.invalidate(); if (result.walletStatus === "ready") toast.success("تم حفظ بيانات العميل وتحديث بطاقة Google Wallet"); else toast.error(`تم حفظ بيانات العميل، لكن تعذّر تحديث Google Wallet (${result.walletErrorCode || "خطأ غير معروف"})`); }, onError: error => toast.error(error.message) });
-  const user = auth.data;
+  const user = auth.user;
   const dashboard = data.data;
   const isManager = dashboard?.operator.role === "manager";
   const filteredCustomers = useMemo(() => (dashboard?.customers ?? []).filter(customer => `${customer.fullName} ${customer.phone} ${customer.cashierName} ${customer.branchName}`.toLowerCase().includes(search.toLowerCase())), [dashboard?.customers, search]);
@@ -81,11 +81,28 @@ export default function Dashboard() {
     return () => { active = false; controls?.stop(); };
   }, [dialog]);
 
-  if (auth.isLoading) return <div className="screen-state"><span className="spinner" />لحظة من فضلك…</div>;
+  useEffect(() => {
+    const role = data.data?.operator.role;
+    if (!role) return;
+    const target = role === "manager" ? "/manager" : "/cashier";
+    if (requiredRole && requiredRole !== role) window.location.replace(target);
+    else if (!requiredRole && !["/manager", "/cashier"].includes(window.location.pathname)) window.location.replace(target);
+  }, [data.data?.operator.role, requiredRole]);
+
+  const handleLogout = async () => {
+    try {
+      await auth.logout();
+      window.location.replace("/login");
+    } catch {
+      toast.error("تعذر تسجيل الخروج حالياً. حاولي مرة أخرى.");
+    }
+  };
+
+  if (auth.loading) return <div className="screen-state"><span className="spinner" />لحظة من فضلك…</div>;
   if (!user) return <main className="login-page"><header className="public-brand"><div className="brand-mark"><img src="/diet-coach-mark.png" alt="شعار Diet Coach" /></div><span>Diet <b>Coach</b></span></header><section className="login-panel"><div className="eyebrow">منظومة العضويات الذكية</div><h1>كل وجبة تقرّبهم لهدفهم.<br /><em>ببساطة.</em></h1><p>رصيد واضح لكل عميل، وتتبع أدق لكل فرع وكاشير.</p><div className="login-card-preview"><div className="preview-card-top"><span className="brand-mark small"><img src="/diet-coach-mark.png" alt="" /></span><span>رصيد الوجبات</span><BadgeCheck size={18} /></div><div className="preview-person">أحمد خالد <span>اشتراك فعّال</span></div><div className="preview-number">14 <small>/ 24</small></div><div className="preview-progress"><span /></div><div className="preview-card-foot"><span>وجبة متبقية</span><span>7 / 10 ختمات</span></div></div><button className="button primary full" onClick={() => startLogin()}><ShieldCheck size={17} /> تسجيل الدخول للوحة العمل <ArrowUpRight size={16} /></button><div className="login-note">الدخول للكاشيرات متاح بعد إضافتهم من المدير باستخدام بريد Manus نفسه.</div></section><footer className="login-footer">Diet Coach <span>•</span> كل تغيير... له بداية</footer></main>;
   if (auth.error && !user) return <div className="screen-state">تعذر التحقق من الدخول. <button className="button" onClick={() => startLogin()}>المحاولة مرة ثانية</button></div>;
   if (data.isLoading) return <div className="screen-state"><span className="spinner" />جارٍ تجهيز لوحة العمل…</div>;
-  if (data.error) return <div className="screen-state"><div className="empty-state"><ShieldCheck /><h2>الدخول غير مفعّل لهذا الحساب</h2><p>{data.error.message}</p><button className="button" onClick={() => { void auth.refetch(); }}>تحديث الصلاحيات</button></div></div>;
+  if (data.error) return <div className="screen-state"><div className="empty-state"><ShieldCheck /><h2>الدخول غير مفعّل لهذا الحساب</h2><p>{data.error.message}</p><button className="button" onClick={() => { void auth.refresh(); }}>تحديث الصلاحيات</button><button className="button secondary" onClick={() => void handleLogout()}><LogOut size={15} /> تسجيل الخروج</button></div></div>;
   if (!dashboard) return null;
 
   const menu: { id: Tab; label: string; icon: typeof BarChart3; managerOnly?: boolean }[] = [
@@ -103,10 +120,10 @@ export default function Dashboard() {
       <a href="/" className="brand"><span className="brand-mark"><img src="/diet-coach-mark.png" alt="شعار Diet Coach" /></span><span>Diet <b>Coach</b><small>دايت كوتش</small></span></a>
       <div className="side-label">مساحة العمل</div>
       <nav>{menu.filter(item => !item.managerOnly || isManager).map(item => <button key={item.id} className={`nav-link ${tab === item.id ? "active" : ""}`} onClick={() => setTab(item.id)}><item.icon size={18} /><span>{item.label}</span>{tab === item.id && <i />}</button>)}</nav>
-      <div className="sidebar-bottom"><div className="support-note"><span className="support-icon"><Utensils size={17} /></span><div><b>كل وجبة تصنع فرقاً</b><small>إدارة أبسط، متابعة أذكى</small></div></div><button className="user-profile" onClick={() => void auth.refetch()}><span className="avatar">{initials(user.name)}</span><span className="profile-info"><b>{user.name || "فريق Diet Coach"}</b><small>{isManager ? "مدير النظام" : "كاشير"}</small></span><ChevronDown size={15} /></button><button className="logout-link" onClick={() => logout.mutate()}><LogOut size={15} /> تسجيل الخروج</button></div>
+      <div className="sidebar-bottom"><div className="support-note"><span className="support-icon"><Utensils size={17} /></span><div><b>كل وجبة تصنع فرقاً</b><small>إدارة أبسط، متابعة أذكى</small></div></div><button className="user-profile" onClick={() => void auth.refresh()}><span className="avatar">{initials(user.name)}</span><span className="profile-info"><b>{user.name || "فريق Diet Coach"}</b><small>{isManager ? "مدير النظام" : "كاشير"}</small></span><ChevronDown size={15} /></button><button className="logout-link" onClick={() => void handleLogout()}><LogOut size={15} /> تسجيل الخروج</button></div>
     </aside>
     <main className="workspace">
-      <header className="topbar"><div><div className="eyebrow">{isManager ? "لوحة الإدارة" : "واجهة الكاشير · تابلت"}</div><h1>{title}</h1></div><div className="topbar-actions"><div className="branch-pill"><Building2 size={16} /><span>{isManager ? "كل الفروع" : dashboard.cashiers[0]?.branchName ?? "الفرع"}</span><i /></div><button className="icon-button mobile-menu" aria-label="القائمة"><Menu size={19} /></button><button className="button primary top-cta" onClick={() => { setScanResult(null); setDialog("scan"); }}><ScanLine size={17} /> مسح بطاقة العميل</button></div></header>
+      <header className="topbar"><div><div className="eyebrow">{isManager ? "لوحة الإدارة" : "واجهة الكاشير · تابلت"}</div><h1>{title}</h1></div><div className="topbar-actions"><div className="branch-pill"><Building2 size={16} /><span>{isManager ? "كل الفروع" : dashboard.cashiers[0]?.branchName ?? "الفرع"}</span><i /></div><button className="icon-button mobile-menu" aria-label="القائمة"><Menu size={19} /></button><button className="button primary top-cta" onClick={() => { setScanResult(null); setDialog("scan"); }}><ScanLine size={17} /> مسح بطاقة العميل</button><button className="button secondary top-logout" onClick={() => void handleLogout()} title="تسجيل الخروج"><LogOut size={16} /><span>تسجيل الخروج</span></button></div></header>
       <section className="welcome-row"><div><h2>{isManager ? "كل تغيير... له بداية" : "جاهزون لوجبة جديدة؟"}</h2><p>{isManager ? "تابع أداء الفروع والكاشيرات من مكان واحد." : "امسح باركود العميل لتسجيل استلام الوجبة."}</p></div><div className="date-chip"><Clock3 size={15} />{new Intl.DateTimeFormat("ar", { weekday: "long", day: "numeric", month: "long" }).format(new Date())}</div></section>
       {tab === "overview" && <>
         <section className="stats-grid"><StatCard icon={Users} label="إجمالي العملاء" value={dashboard.stats.customers.toLocaleString("ar")} detail="عميل مسجّل" tone="mint" /><StatCard icon={Utensils} label="وجبات متبقية" value={dashboard.stats.mealsRemaining.toLocaleString("ar")} detail="لدى عملائك" tone="lime" /><StatCard icon={ArrowDownLeft} label="وجبات مستلمة اليوم" value={dashboard.stats.redemptionsToday.toLocaleString("ar")} detail="مسح أو توصيل" tone="blue" /><StatCard icon={Building2} label={isManager ? "الفروع النشطة" : "فرعك"} value={isManager ? dashboard.stats.branches.toLocaleString("ar") : (dashboard.cashiers[0]?.branchName ?? "—")} detail={isManager ? `${dashboard.stats.cashiers} كاشير` : "موقع العمل"} tone="warm" /></section>

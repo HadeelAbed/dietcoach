@@ -10,13 +10,20 @@ import MemberPage from "./pages/MemberPage";
 import DeliveryPage from "./pages/DeliveryPage";
 import DeliveryScanPage from "./pages/DeliveryScanPage";
 
+function LoginDashboard() { return <Dashboard />; }
+function ManagerDashboard() { return <Dashboard requiredRole="manager" />; }
+function CashierDashboard() { return <Dashboard requiredRole="cashier" />; }
+
 function Router() {
   return <Switch>
     <Route path="/register/:token" component={RegisterPage} />
     <Route path="/member/:token" component={MemberPage} />
     <Route path="/delivery/:token" component={DeliveryPage} />
     <Route path="/delivery-scan/:token" component={DeliveryScanPage} />
-    <Route path="/" component={Dashboard} />
+    <Route path="/login" component={LoginDashboard} />
+    <Route path="/manager" component={ManagerDashboard} />
+    <Route path="/cashier" component={CashierDashboard} />
+    <Route path="/" component={LoginDashboard} />
     <Route path="/404" component={NotFound} />
     <Route component={NotFound} />
   </Switch>;
