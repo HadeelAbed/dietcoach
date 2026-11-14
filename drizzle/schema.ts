@@ -38,9 +38,20 @@ export const registrationLinks = mysqlTable("registrationLinks", {
   branchId: int("branchId").notNull(),
   cashierId: int("cashierId").notNull(),
   totalMeals: int("totalMeals").notNull(),
+  packageSelectionEnabled: int("packageSelectionEnabled").default(0).notNull(),
   createdByUserId: int("createdByUserId").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   usedAt: timestamp("usedAt"),
+});
+
+export const mealPackages = mysqlTable("mealPackages", {
+  id: int("id").autoincrement().primaryKey(),
+  name: varchar("name", { length: 140 }).notNull(),
+  durationDays: int("durationDays").notNull(),
+  totalMeals: int("totalMeals").notNull(),
+  active: int("active").default(1).notNull(),
+  createdByUserId: int("createdByUserId").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
 export const customers = mysqlTable("customers", {
@@ -49,6 +60,12 @@ export const customers = mysqlTable("customers", {
   fullName: varchar("fullName", { length: 160 }).notNull(),
   phone: varchar("phone", { length: 40 }).notNull(),
   email: varchar("email", { length: 320 }),
+  gender: mysqlEnum("gender", ["female", "male", "unspecified"]).default("unspecified").notNull(),
+  packageId: int("packageId"),
+  packageName: varchar("packageName", { length: 140 }).default("غير محدد").notNull(),
+  packageDays: int("packageDays").default(0).notNull(),
+  packageStartedAt: timestamp("packageStartedAt"),
+  packageExpiresAt: timestamp("packageExpiresAt"),
   totalMeals: int("totalMeals").notNull(),
   mealsRemaining: int("mealsRemaining").notNull(),
   registrationLinkId: int("registrationLinkId").notNull(),

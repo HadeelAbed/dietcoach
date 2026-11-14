@@ -1,9 +1,9 @@
 import { COOKIE_NAME } from "@shared/const";
-import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { branches, cashiers, customers, deliveryLinks, deliveryStations, redemptions, registrationLinks } from "../drizzle/schema";
+import { branches, cashiers, customers, deliveryLinks, deliveryStations, mealPackages, redemptions, registrationLinks } from "../drizzle/schema";
 import { getDb } from "./db";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
@@ -97,6 +97,7 @@ export const appRouter = router({
       const clientRows = isManager
         ? await db.select().from(customers).orderBy(desc(customers.createdAt))
         : await db.select().from(customers).where(eq(customers.sourceCashierId, ctx.actor.cashierId!)).orderBy(desc(customers.createdAt));
+      const packageRows = await db.select().from(mealPackages).orderBy(desc(mealPackages.createdAt));
       const activityRows = isManager
         ? await db.select().from(redemptions).orderBy(desc(redemptions.createdAt))
         : await db.select().from(redemptions).where(eq(redemptions.cashierId, ctx.actor.cashierId!)).orderBy(desc(redemptions.createdAt));
@@ -108,6 +109,7 @@ export const appRouter = router({
         operator: { id: ctx.user.id, name: ctx.user.name ?? "فريق Diet Coach", email: ctx.user.email, role: ctx.actor.role, branchId: ctx.actor.branchId, cashierId: ctx.actor.cashierId },
         branches: allBranches,
         cashiers: allCashiers.map(item => ({ ...item, branchName: branchMap.get(item.branchId) ?? "—" })),
+        packages: isManager ? packageRows : packageRows.filter(item => item.active === 1),
         customers: clientRows.map(item => ({ ...item, branchName: branchMap.get(item.sourceBranchId) ?? "—", cashierName: cashierMap.get(item.sourceCashierId) ?? "—" })),
         activity: activityRows.map(item => ({ ...item, customerName: customerMap.get(item.customerId) ?? "عميل", branchName: item.branchId == null ? "—" : branchMap.get(item.branchId) ?? "—", cashierName: item.cashierId == null ? "الإدارة" : cashierMap.get(item.cashierId) ?? "—", methodLabel: item.method === "delivery" ? "توصيل" : "الكاشير" })),
         stats: { customers: clientRows.length, mealsRemaining: clientRows.reduce((sum, item) => sum + item.mealsRemaining, 0), redemptionsToday, branches: allBranches.length, cashiers: allCashiers.length },
@@ -141,44 +143,134 @@ export const appRouter = router({
       await db.update(cashiers).set({ active: input.active ? 1 : 0 }).where(eq(cashiers.id, input.cashierId));
       return { ok: true };
     }),
-    updateCustomer: managerProcedure.input(z.object({ customerId: z.number().int().positive(), fullName: z.string().trim().min(2).max(160), phone: z.string().trim().min(7).max(40), email: z.string().trim().email().max(320).optional().or(z.literal("")), totalMeals: z.number().int().min(1).max(200), mealsRemaining: z.number().int().min(0) }).refine(value => value.mealsRemaining <= value.totalMeals, { message: "عدد الوجبات المتبقية لا يمكن أن يتجاوز إجمالي الوجبات" }))
+    seedDefaultMealPackages: managerProcedure.mutation(async ({ ctx }) => {
+      const db = await dbOrFail();
+      const createdCount = await db.transaction(async tx => {
+        const durations = [10, 20, 24, 26, 30];
+        const mealTiers = [
+          { name: "وجبة واحدة يومياً", mealsPerDay: 1 },
+          { name: "وجبتان يومياً", mealsPerDay: 2 },
+          { name: "3 وجبات يومياً", mealsPerDay: 3 },
+          { name: "4 وجبات يومياً", mealsPerDay: 4 },
+        ];
+        const defaults = mealTiers.flatMap(tier => durations.map(durationDays => ({ name: tier.name, durationDays, totalMeals: durationDays * tier.mealsPerDay })));
+        const existing = await tx.select({ name: mealPackages.name, durationDays: mealPackages.durationDays }).from(mealPackages).for("update");
+        if (existing.length >= defaults.length) return 0;
+        const existingKeys = new Set(existing.map(item => `${item.name}:${item.durationDays}`));
+        const missing = defaults.filter(item => !existingKeys.has(`${item.name}:${item.durationDays}`));
+        if (missing.length) await tx.insert(mealPackages).values(missing.map(item => ({ ...item, createdByUserId: ctx.user.id, active: 1 })));
+        return missing.length;
+      });
+      return { createdCount };
+    }),
+    createMealPackage: managerProcedure.input(z.object({ name: z.string().trim().min(2).max(140), durationDays: z.number().int().min(1).max(3650), totalMeals: z.number().int().min(1).max(5000) })).mutation(async ({ ctx, input }) => {
+      const db = await dbOrFail();
+      await db.insert(mealPackages).values({ ...input, createdByUserId: ctx.user.id, active: 1 });
+      return { ok: true };
+    }),
+    updateMealPackage: managerProcedure.input(z.object({ packageId: z.number().int().positive(), name: z.string().trim().min(2).max(140), durationDays: z.number().int().min(1).max(3650), totalMeals: z.number().int().min(1).max(5000) })).mutation(async ({ input }) => {
+      const db = await dbOrFail();
+      const [existing] = await db.select({ id: mealPackages.id }).from(mealPackages).where(eq(mealPackages.id, input.packageId)).limit(1);
+      if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "الباقة غير موجودة" });
+      await db.update(mealPackages).set({ name: input.name, durationDays: input.durationDays, totalMeals: input.totalMeals }).where(eq(mealPackages.id, input.packageId));
+      return { ok: true };
+    }),
+    setMealPackageActive: managerProcedure.input(z.object({ packageId: z.number().int().positive(), active: z.boolean() })).mutation(async ({ input }) => {
+      const db = await dbOrFail();
+      const [existing] = await db.select({ id: mealPackages.id }).from(mealPackages).where(eq(mealPackages.id, input.packageId)).limit(1);
+      if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "الباقة غير موجودة" });
+      await db.update(mealPackages).set({ active: input.active ? 1 : 0 }).where(eq(mealPackages.id, input.packageId));
+      return { ok: true };
+    }),
+    importCustomers: managerProcedure.input(z.array(z.object({
+      fullName: z.string().trim().min(2).max(160),
+      phone: z.string().trim().min(7).max(40),
+      email: z.string().trim().email().max(320).optional().or(z.literal("")),
+      gender: z.enum(["female", "male", "unspecified"]),
+      packageName: z.string().trim().min(1).max(140),
+      durationDays: z.number().int().min(1).max(3650),
+      totalMeals: z.number().int().min(1).max(5000),
+      mealsRemaining: z.number().int().min(0).max(5000),
+      startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      expiresAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      cashierEmail: z.string().trim().email().max(320),
+    }).refine(row => row.mealsRemaining <= row.totalMeals, { message: "الرصيد المتبقي يتجاوز إجمالي الوجبات" })).min(1).max(500)).mutation(async ({ ctx, input }) => {
+      const db = await dbOrFail();
+      const cashierEmails = [...new Set(input.map(row => row.cashierEmail.trim().toLowerCase()))];
+      const cashierRows = await db.select().from(cashiers).where(inArray(cashiers.email, cashierEmails));
+      const cashierByEmail = new Map(cashierRows.filter(item => item.active === 1).map(item => [item.email.toLowerCase(), item]));
+      if (input.some(row => !cashierByEmail.has(row.cashierEmail.trim().toLowerCase()))) throw new TRPCError({ code: "BAD_REQUEST", message: "لم تُستورد البيانات: كل cashierEmail يجب أن يطابق بريداً لكاشير نشط في النظام." });
+      const dateFromIso = (value: string) => {
+        const date = new Date(`${value}T00:00:00.000Z`);
+        if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) throw new TRPCError({ code: "BAD_REQUEST", message: "التاريخ غير صالح؛ استخدمي YYYY-MM-DD." });
+        return date;
+      };
+      const phones = input.map(row => row.phone.trim());
+      if (new Set(phones).size !== phones.length) throw new TRPCError({ code: "CONFLICT", message: "الملف يحتوي أرقام هاتف مكررة؛ أزيلي التكرار ثم أعيدي الاستيراد." });
+      if ((await db.select({ phone: customers.phone }).from(customers).where(inArray(customers.phone, phones))).length) throw new TRPCError({ code: "CONFLICT", message: "بعض أرقام الهاتف موجودة مسبقاً؛ لم يتم استيراد أي صف." });
+      for (const row of input) if (dateFromIso(row.expiresAt) < dateFromIso(row.startDate)) throw new TRPCError({ code: "BAD_REQUEST", message: "تاريخ انتهاء الباقة لا يمكن أن يسبق تاريخ البدء." });
+      await db.transaction(async tx => {
+        for (const row of input) {
+          const cashier = cashierByEmail.get(row.cashierEmail.trim().toLowerCase())!;
+          const [link] = await tx.insert(registrationLinks).values({ token: nanoid(40), branchId: cashier.branchId, cashierId: cashier.id, totalMeals: row.totalMeals, packageSelectionEnabled: 0, createdByUserId: ctx.user.id, usedAt: new Date() });
+          await tx.insert(customers).values({ token: nanoid(40), fullName: row.fullName, phone: row.phone.trim(), email: row.email || null, gender: row.gender, packageId: null, packageName: row.packageName, packageDays: row.durationDays, packageStartedAt: dateFromIso(row.startDate), packageExpiresAt: dateFromIso(row.expiresAt), totalMeals: row.totalMeals, mealsRemaining: row.mealsRemaining, registrationLinkId: link.insertId, sourceBranchId: cashier.branchId, sourceCashierId: cashier.id });
+        }
+      });
+      return { importedCount: input.length };
+    }),
+    updateCustomer: managerProcedure.input(z.object({ customerId: z.number().int().positive(), fullName: z.string().trim().min(2).max(160), phone: z.string().trim().min(7).max(40), email: z.string().trim().email().max(320).optional().or(z.literal("")), gender: z.enum(["female", "male", "unspecified"]), packageName: z.string().trim().min(1).max(140), packageDays: z.number().int().min(0).max(3650), packageStartedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().or(z.literal("")), packageExpiresAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().or(z.literal("")), totalMeals: z.number().int().min(1).max(5000), mealsRemaining: z.number().int().min(0).max(5000) }).refine(value => value.mealsRemaining <= value.totalMeals, { message: "عدد الوجبات المتبقية لا يمكن أن يتجاوز إجمالي الوجبات" }).refine(value => value.packageDays === 0 || (!!value.packageStartedAt && !!value.packageExpiresAt), { message: "أدخلي تاريخ بدء وانتهاء الباقة" }).refine(value => !value.packageStartedAt || !value.packageExpiresAt || value.packageExpiresAt >= value.packageStartedAt, { message: "تاريخ انتهاء الباقة لا يمكن أن يسبق تاريخ البدء" }))
       .mutation(async ({ input }) => {
         const db = await dbOrFail();
         const [existing] = await db.select({ id: customers.id }).from(customers).where(eq(customers.id, input.customerId)).limit(1);
         if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
-        await db.update(customers).set({ fullName: input.fullName, phone: input.phone, email: input.email || null, totalMeals: input.totalMeals, mealsRemaining: input.mealsRemaining }).where(eq(customers.id, input.customerId));
+        const dateAtNoon = (value: string) => value ? new Date(`${value}T12:00:00.000Z`) : null;
+        await db.update(customers).set({ fullName: input.fullName, phone: input.phone, email: input.email || null, gender: input.gender, packageName: input.packageName, packageDays: input.packageDays, packageStartedAt: dateAtNoon(input.packageStartedAt ?? ""), packageExpiresAt: dateAtNoon(input.packageExpiresAt ?? ""), totalMeals: input.totalMeals, mealsRemaining: input.mealsRemaining }).where(eq(customers.id, input.customerId));
         const wallet = await syncCustomerWallet(input.customerId);
         return { ok: true, walletStatus: wallet.status, walletErrorCode: wallet.errorCode };
       }),
   }),
 
   registration: router({
-    createLink: operatorProcedure.input(z.object({ totalMeals: z.number().int().min(1).max(200), cashierId: z.number().int().positive().optional() })).mutation(async ({ ctx, input }) => {
+    createLink: operatorProcedure.input(z.object({ cashierId: z.number().int().positive().optional() })).mutation(async ({ ctx, input }) => {
       const db = await dbOrFail();
+      const [availablePackage] = await db.select({ id: mealPackages.id }).from(mealPackages).where(eq(mealPackages.active, 1)).limit(1);
+      if (!availablePackage) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لا توجد باقات مفعّلة. على المدير إضافة باقة واحدة على الأقل أولاً." });
       let cashierId = ctx.actor.cashierId;
       if (ctx.actor.role === "manager") cashierId = input.cashierId ?? null;
       if (!cashierId) throw new TRPCError({ code: "BAD_REQUEST", message: "اختر كاشيراً لهذا الرابط" });
       const [cashier] = await db.select().from(cashiers).where(and(eq(cashiers.id, cashierId), eq(cashiers.active, 1))).limit(1);
       if (!cashier) throw new TRPCError({ code: "NOT_FOUND", message: "الكاشير غير موجود أو غير فعّال" });
       const token = nanoid(40);
-      await db.insert(registrationLinks).values({ token, branchId: cashier.branchId, cashierId: cashier.id, totalMeals: input.totalMeals, createdByUserId: ctx.user.id });
+      await db.insert(registrationLinks).values({ token, branchId: cashier.branchId, cashierId: cashier.id, totalMeals: 0, packageSelectionEnabled: 1, createdByUserId: ctx.user.id });
       return { url: linkPath("register", token), token };
     }),
     info: publicProcedure.input(z.object({ token: z.string().min(20).max(64) })).query(async ({ input }) => {
       const db = await dbOrFail();
       const [row] = await db.select({ link: registrationLinks, branchName: branches.name, cashierName: cashiers.name }).from(registrationLinks).innerJoin(branches, eq(registrationLinks.branchId, branches.id)).innerJoin(cashiers, eq(registrationLinks.cashierId, cashiers.id)).where(eq(registrationLinks.token, input.token)).limit(1);
       if (!row || row.link.usedAt) throw new TRPCError({ code: "NOT_FOUND", message: "رابط التسجيل غير صالح أو تم استخدامه" });
-      return { totalMeals: row.link.totalMeals, branchName: row.branchName, cashierName: row.cashierName };
+      const packages = row.link.packageSelectionEnabled ? await db.select({ id: mealPackages.id, name: mealPackages.name, durationDays: mealPackages.durationDays, totalMeals: mealPackages.totalMeals }).from(mealPackages).where(eq(mealPackages.active, 1)).orderBy(desc(mealPackages.createdAt)) : [];
+      return { totalMeals: row.link.totalMeals, packageSelectionEnabled: row.link.packageSelectionEnabled === 1, packages, branchName: row.branchName, cashierName: row.cashierName };
     }),
-    submit: publicProcedure.input(z.object({ token: z.string().min(20).max(64), fullName: z.string().trim().min(2).max(160), phone: z.string().trim().min(7).max(40), email: z.string().trim().email().max(320).optional().or(z.literal("")) })).mutation(async ({ input }) => {
+    submit: publicProcedure.input(z.object({ token: z.string().min(20).max(64), fullName: z.string().trim().min(2).max(160), phone: z.string().trim().min(7).max(40), email: z.string().trim().email().max(320).optional().or(z.literal("")), gender: z.enum(["female", "male", "unspecified"]), packageId: z.number().int().positive().optional() })).mutation(async ({ input }) => {
       const db = await dbOrFail();
       const customer = await db.transaction(async tx => {
         const [link] = await tx.select().from(registrationLinks).where(eq(registrationLinks.token, input.token)).limit(1);
         if (!link || link.usedAt) throw new TRPCError({ code: "NOT_FOUND", message: "رابط التسجيل غير صالح أو تم استخدامه" });
+        let selectedPackage: typeof mealPackages.$inferSelect | undefined;
+        if (link.packageSelectionEnabled === 1) {
+          if (!input.packageId) throw new TRPCError({ code: "BAD_REQUEST", message: "اختاري الباقة قبل إنشاء البطاقة." });
+          [selectedPackage] = await tx.select().from(mealPackages).where(and(eq(mealPackages.id, input.packageId), eq(mealPackages.active, 1))).limit(1);
+          if (!selectedPackage) throw new TRPCError({ code: "NOT_FOUND", message: "هذه الباقة لم تعد متاحة؛ حدّثي الصفحة واختاري باقة أخرى." });
+        } else if (input.packageId) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "هذا رابط تسجيل قديم ولا يقبل تغيير الباقة." });
+        }
         const [claimed] = await tx.update(registrationLinks).set({ usedAt: new Date() }).where(and(eq(registrationLinks.id, link.id), isNull(registrationLinks.usedAt)));
         if (!claimed.affectedRows) throw new TRPCError({ code: "CONFLICT", message: "تم استخدام رابط التسجيل مسبقاً" });
+        const totalMeals = selectedPackage?.totalMeals ?? link.totalMeals;
+        const packageStartedAt = selectedPackage ? new Date() : null;
+        const packageExpiresAt = selectedPackage ? new Date(packageStartedAt!.getTime() + selectedPackage.durationDays * 24 * 60 * 60 * 1000) : null;
         const token = nanoid(40);
-        const [inserted] = await tx.insert(customers).values({ token, fullName: input.fullName, phone: input.phone, email: input.email || null, totalMeals: link.totalMeals, mealsRemaining: link.totalMeals, registrationLinkId: link.id, sourceBranchId: link.branchId, sourceCashierId: link.cashierId });
+        const [inserted] = await tx.insert(customers).values({ token, fullName: input.fullName, phone: input.phone, email: input.email || null, gender: input.gender, packageId: selectedPackage?.id ?? null, packageName: selectedPackage?.name ?? "باقة تسجيل قديمة", packageDays: selectedPackage?.durationDays ?? 0, packageStartedAt, packageExpiresAt, totalMeals, mealsRemaining: totalMeals, registrationLinkId: link.id, sourceBranchId: link.branchId, sourceCashierId: link.cashierId });
         return { id: inserted.insertId, token };
       });
       await syncCustomerWallet(customer.id);
@@ -223,7 +315,7 @@ export const appRouter = router({
       } catch (error) {
         googleWalletLinkErrorCode = googleWalletErrorCodeFn(error);
       }
-      return { fullName: row.customer.fullName, phone: row.customer.phone, email: row.customer.email, totalMeals: row.customer.totalMeals, mealsRemaining: row.customer.mealsRemaining, branchName: row.branchName, createdAt: row.customer.createdAt, googleWalletStatus: row.customer.googleWalletStatus, googleWalletErrorCode: row.customer.googleWalletErrorCode, googleWalletLinkErrorCode, googleWalletSaveUrl };
+      return { fullName: row.customer.fullName, phone: row.customer.phone, email: row.customer.email, gender: row.customer.gender, packageName: row.customer.packageName, packageDays: row.customer.packageDays, packageStartedAt: row.customer.packageStartedAt, packageExpiresAt: row.customer.packageExpiresAt, totalMeals: row.customer.totalMeals, mealsRemaining: row.customer.mealsRemaining, branchName: row.branchName, createdAt: row.customer.createdAt, googleWalletStatus: row.customer.googleWalletStatus, googleWalletErrorCode: row.customer.googleWalletErrorCode, googleWalletLinkErrorCode, googleWalletSaveUrl };
     }),
     retryGoogleWallet: publicProcedure.input(z.object({ token: z.string().min(20).max(64) })).mutation(async ({ input }) => {
       const db = await dbOrFail();

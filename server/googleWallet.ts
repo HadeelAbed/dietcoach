@@ -13,6 +13,11 @@ export type WalletCustomer = {
   fullName: string;
   phone: string;
   email: string | null;
+  gender?: "female" | "male" | "unspecified";
+  packageName?: string;
+  packageDays?: number;
+  packageStartedAt?: Date | null;
+  packageExpiresAt?: Date | null;
   totalMeals: number;
   mealsRemaining: number;
   branchName: string;
@@ -109,6 +114,7 @@ function objectIdFor(customer: WalletCustomer) {
 }
 
 function buildGenericObject(customer: WalletCustomer) {
+  const dateLabel = (date: Date | null | undefined) => date ? new Intl.DateTimeFormat("ar", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" }).format(date) : "غير محدد";
   return {
     id: objectIdFor(customer),
     classId: CLASS_ID,
@@ -124,6 +130,10 @@ function buildGenericObject(customer: WalletCustomer) {
       { id: "meal_balance", header: "الوجبات المتبقية", body: `${customer.mealsRemaining} من ${customer.totalMeals}` },
       { id: "branch", header: "الفرع", body: customer.branchName },
       { id: "phone", header: "رقم الهاتف", body: customer.phone },
+      ...(customer.gender ? [{ id: "gender", header: "الجنس", body: customer.gender === "female" ? "أنثى" : customer.gender === "male" ? "ذكر" : "غير محدد" }] : []),
+      ...(customer.packageName ? [{ id: "package", header: "الباقة", body: customer.packageName }] : []),
+      ...(customer.packageDays ? [{ id: "package_duration", header: "مدة الباقة", body: `${customer.packageDays} يوم` }] : []),
+      ...(customer.packageExpiresAt ? [{ id: "package_expiry", header: "انتهاء الباقة", body: dateLabel(customer.packageExpiresAt) }] : []),
       ...(customer.email ? [{ id: "email", header: "البريد الإلكتروني", body: customer.email }] : []),
     ],
   };
