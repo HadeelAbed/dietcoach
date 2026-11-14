@@ -61,6 +61,8 @@ export const customers = mysqlTable("customers", {
   phone: varchar("phone", { length: 40 }).notNull(),
   email: varchar("email", { length: 320 }),
   gender: mysqlEnum("gender", ["female", "male", "unspecified"]).default("unspecified").notNull(),
+  membershipNumber: varchar("membershipNumber", { length: 24 }).notNull().unique(),
+  deliveryMode: mysqlEnum("deliveryMode", ["delivery", "manual"]).default("manual").notNull(),
   packageId: int("packageId"),
   packageName: varchar("packageName", { length: 140 }).default("غير محدد").notNull(),
   packageDays: int("packageDays").default(0).notNull(),

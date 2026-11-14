@@ -3,6 +3,7 @@ export type CustomerImportRow = {
   phone: string;
   email: string;
   gender: "female" | "male" | "unspecified";
+  deliveryMode: "delivery" | "manual";
   packageName: string;
   durationDays: number;
   totalMeals: number;
@@ -68,6 +69,13 @@ const genderValue = (value: string): CustomerImportRow["gender"] | null => {
   if (["unspecified", "unknown", "غير محدد", "أفضل عدم الإفصاح", ""].includes(normalized)) return "unspecified";
   return null;
 };
+const deliveryValue = (value: string): CustomerImportRow["deliveryMode"] | null => {
+  const normalized = value.trim().toLocaleLowerCase();
+  if (["delivery", "توصيل"].includes(normalized)) return "delivery";
+  if (["manual", "pickup", "استلام", "استلام يدوي"].includes(normalized)) return "manual";
+  if (!normalized) return "manual";
+  return null;
+};
 
 export function parseCustomerImportCsv(source: string): CustomerCsvParseResult {
   let matrix: string[][];
@@ -91,11 +99,13 @@ export function parseCustomerImportCsv(source: string): CustomerCsvParseResult {
     const line = position + 2;
     const number = (header: string) => Number(cell(raw, header));
     const gender = genderValue(cell(raw, "gender"));
+    const deliveryMode = deliveryValue(cell(raw, "deliveryMode"));
     const row: CustomerImportRow = {
       fullName: cell(raw, "fullName"),
       phone: cell(raw, "phone"),
       email: cell(raw, "email"),
       gender: gender ?? "unspecified",
+      deliveryMode: deliveryMode ?? "manual",
       packageName: cell(raw, "packageName"),
       durationDays: number("durationDays"),
       totalMeals: number("totalMeals"),
@@ -108,6 +118,7 @@ export function parseCustomerImportCsv(source: string): CustomerCsvParseResult {
     if (row.fullName.length < 2 || row.fullName.length > 160) issues.push("اسم العميل غير صالح");
     if (row.phone.length < 7 || row.phone.length > 40) issues.push("رقم الهاتف غير صالح");
     if (gender === null) issues.push("الجنس يجب أن يكون female أو male أو unspecified");
+    if (deliveryMode === null) issues.push("طريقة الاستلام يجب أن تكون delivery أو manual");
     if (!row.packageName || row.packageName.length > 140) issues.push("اسم الباقة مطلوب");
     if (!Number.isInteger(row.durationDays) || row.durationDays < 1 || row.durationDays > 3650) issues.push("مدة الباقة يجب أن تكون عدداً صحيحاً بين 1 و3650 يوماً");
     if (!Number.isInteger(row.totalMeals) || row.totalMeals < 1 || row.totalMeals > 5000) issues.push("إجمالي الوجبات غير صالح");

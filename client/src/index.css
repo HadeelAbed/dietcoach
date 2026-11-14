@@ -38,3 +38,5 @@
 .package-select-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .package-select-label select:disabled{background:#f1f4f1;color:#8b968d;cursor:not-allowed}
 @media(max-width:560px){.package-select-grid{grid-template-columns:1fr}}
+
+.fulfillment-field{margin:0;padding:0;border:0}.fulfillment-field legend{margin-bottom:8px;font-weight:700;font-size:13px}.fulfillment-options{display:grid;grid-template-columns:1fr 1fr;gap:10px}.fulfillment-option{position:relative;display:flex!important;align-items:center;justify-content:center;gap:9px;min-height:48px;padding:10px;border:1px solid #e0e7e1;border-radius:12px;background:#fff;color:#506456;font-weight:700;cursor:pointer}.fulfillment-option input{position:absolute;opacity:0;pointer-events:none}.fulfillment-option.selected{border-color:#4d8b69;background:#eef7f0;box-shadow:0 0 0 2px #d9ecde;color:#315e49}.fulfillment-option:focus-within{outline:2px solid #6fa581;outline-offset:2px}.member-membership-number{display:inline-flex;margin:2px 0 4px;padding:4px 9px;border:1px solid #ffffff35;border-radius:999px;color:#e3eddc;font:600 10px Inter,Cairo,sans-serif;direction:ltr}

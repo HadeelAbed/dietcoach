@@ -10,6 +10,8 @@ const WALLET_SCOPE = "https://www.googleapis.com/auth/wallet_object.issuer";
 
 export type WalletCustomer = {
   token: string;
+  membershipNumber?: string;
+  deliveryMode?: "delivery" | "manual";
   fullName: string;
   phone: string;
   email: string | null;
@@ -124,14 +126,16 @@ function buildGenericObject(customer: WalletCustomer) {
     cardTitle: { defaultValue: { language: "ar", value: "Diet Coach" } },
     subheader: { defaultValue: { language: "ar", value: "بطاقة عضوية الوجبات" } },
     header: { defaultValue: { language: "ar", value: customer.fullName } },
-    barcode: { type: "QR_CODE", value: customer.token, alternateText: "امسح الرمز عند استلام الوجبة" },
+    barcode: { type: "QR_CODE", value: customer.token, alternateText: customer.membershipNumber ? `رقم العضوية ${customer.membershipNumber}` : "امسح الرمز عند استلام الوجبة" },
     textModulesData: [
+      ...(customer.membershipNumber ? [{ id: "membership_number", header: "رقم العضوية", body: customer.membershipNumber }] : []),
       { id: "customer_name", header: "اسم العميل", body: customer.fullName },
       { id: "meal_balance", header: "الوجبات المتبقية", body: `${customer.mealsRemaining} من ${customer.totalMeals}` },
       { id: "branch", header: "الفرع", body: customer.branchName },
       { id: "phone", header: "رقم الهاتف", body: customer.phone },
       ...(customer.gender ? [{ id: "gender", header: "الجنس", body: customer.gender === "female" ? "أنثى" : customer.gender === "male" ? "ذكر" : "غير محدد" }] : []),
       ...(customer.packageName ? [{ id: "package", header: "الباقة", body: customer.packageName }] : []),
+      ...(customer.deliveryMode ? [{ id: "fulfillment", header: "طريقة الاستلام", body: customer.deliveryMode === "delivery" ? "توصيل" : "استلام يدوي" }] : []),
       ...(customer.packageDays ? [{ id: "package_duration", header: "مدة الباقة", body: `${customer.packageDays} يوم` }] : []),
       ...(customer.packageExpiresAt ? [{ id: "package_expiry", header: "انتهاء الباقة", body: dateLabel(customer.packageExpiresAt) }] : []),
       ...(customer.email ? [{ id: "email", header: "البريد الإلكتروني", body: customer.email }] : []),

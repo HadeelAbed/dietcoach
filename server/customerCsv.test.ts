@@ -19,6 +19,14 @@ describe("customer CSV import format", () => {
     expect(result.rows[0]).toMatchObject({ fullName: "سارة علي", gender: "female", durationDays: 10, totalMeals: 20, mealsRemaining: 18 });
   });
 
+  it("parses delivery preference and defaults legacy CSV files to manual handover", () => {
+    const legacyCsv = `${header}\n"سارة علي",0791234567,,أنثى,"باقة 10 أيام",10,20,18,2026-11-01,2026-11-11,cashier@example.com`;
+    const deliveryHeader = header.replace("startDate", "deliveryMode,startDate");
+    const deliveryCsv = `${deliveryHeader}\n"سارة علي",0791234567,,female,"باقة",10,20,18,delivery,2026-11-01,2026-11-11,cashier@example.com`;
+    expect(parseCustomerImportCsv(legacyCsv).rows[0].deliveryMode).toBe("manual");
+    expect(parseCustomerImportCsv(deliveryCsv).rows[0].deliveryMode).toBe("delivery");
+  });
+
   it("rejects missing columns and invalid remaining balance", () => {
     expect(parseCustomerImportCsv("fullName,phone\nA,079").errors[0]).toContain("الأعمدة المطلوبة");
     const csv = `${header}\n"سارة علي",0791234567,,female,"باقة",10,20,21,2026-11-01,2026-11-11,cashier@example.com`;
